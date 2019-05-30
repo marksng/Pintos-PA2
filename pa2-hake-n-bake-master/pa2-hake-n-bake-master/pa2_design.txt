@@ -1,0 +1,232 @@
+		     +--------------------------+
+       	       	     |		CS 140		|
+		     | PROJECT 2: USER PROGRAMS	|
+		     | 	   DESIGN DOCUMENT     	|
+		     +--------------------------+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+Mark      Ng       <markng@buffalo.edu> 
+Andrew    Woloszyn <awoloszy@buffalo.edu>
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+			   ARGUMENT PASSING
+			   ================
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+N/A
+
+---- ALGORITHMS ----
+
+>> A2: Briefly describe how you implemented argument parsing.  How do
+>> you arrange for the elements of argv[] to be in the right order?
+>> How do you avoid overflowing the stack page?
+
+We used the strtok_r() to separate each argument. Then we pushed the words 
+in the stack (from right to left), pushed a null pointer sentinel, then 
+pushed the addresses of each word in the same order. Followed by argv and 
+argc, and then the "fake return address" of 0. We verify that there's enough
+space on the stack before pushing the words onto it. 
+
+---- RATIONALE ----
+
+>> A3: Why does Pintos implement strtok_r() but not strtok()?
+
+strtok_r() requires a pointer keep track of the position in the string between 
+calls so that it can be called by different threads and not lose its context. 
+
+>> A4: In Pintos, the kernel separates commands into a executable name
+>> and arguments.  In Unix-like systems, the shell does this
+>> separation.  Identify at least two advantages of the Unix approach.
+
+Separation between user and kernel space. This ensures that the user, when
+running commands through the shell, doesn't have access to any kernel addresses.
+
+It also prevents the user from overflowing the kernel's stack. 
+
+			     SYSTEM CALLS
+			     ============
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+In syscall.c:
+	struct list file_des; 		// list of pairs of fds and paths
+	struct lock fso_lock;		// lock to ensure only one file system
+							operation at a time
+In thread.c:
+	int child_exit;			// exit status of child when calling wait
+	boolean waiting;			// keeps track of if thread is current waiting
+
+>> B2: Describe how file descriptors are associated with open files.
+>> Are file descriptors unique within the entire OS or just within a
+>> single process?
+They are unique in the OS. We keep a kernel-level list of pairs of file 
+descriptors and the file paths.
+
+---- ALGORITHMS ----
+
+>> B3: Describe your code for reading and writing user data from the
+>> kernel.
+READING DATA - 
+	1. Try to acquire the file system operation lock.
+	2. Once we acquire the lock, then - 
+		- Check if the file exists. 
+			- if it exists -	
+				- Create a file descriptor and associate it with the file 
+				- Add the file descriptor and path pair to the
+   kernel list of open file descriptors
+				- 
+	3. Release the lock.
+WRITE DATA - 
+1. Try to acquire the lock for the file we’re trying to write to.
+2. Once we acquire the lock, hten - 
+	- Check if the file exists,
+		If it exists - 
+				- Write to the console using putbuf() 
+	3. Release the lock.
+>> B4: Suppose a system call causes a full page (4,096 bytes) of data
+>> to be copied from user space into the kernel.  What is the least
+>> and the greatest possible number of inspections of the page table
+>> (e.g. calls to pagedir_get_page()) that might result?  What about
+>> for a system call that only copies 2 bytes of data?  Is there room
+>> for improvement in these numbers, and how much?
+Worst case of number of inspections is two - we have to ensure that the 
+beginning of the data and the very end of the data is valid. 
+Best case for checking a system call that copies 2 bytes of data is 1 -
+only to check the approximate location of the data and see if it’s valid
+
+>> B5: Briefly describe your implementation of the "wait" system call
+>> and how it interacts with process termination.
+
+The wait system call performs the following actions when called by a process:
+Check if passed in pid is a child of the process (if not, return -1)
+Call the process_wait() function with the pid passed in
+In process_wait(), a semaphore is “downed,” putting the parent 
+thread to sleep until the child thread dies
+Once the child thread dies, it “ups” the semaphore and passes 
+its exit code to the parent thread via a variable added to the 
+thread struct
+If the parent thread tries to call wait again, return -1
+
+>> B6: Any access to user program memory at a user-specified address
+>> can fail due to a bad pointer value.  Such accesses must cause the
+>> process to be terminated.  System calls are fraught with such
+>> accesses, e.g. a "write" system call requires reading the system
+>> call number from the user stack, then each of the call's three
+>> arguments, then an arbitrary amount of user memory, and any of
+>> these can fail at any point.  This poses a design and
+>> error-handling problem: how do you best avoid obscuring the primary
+>> function of code in a morass of error-handling?  Furthermore, when
+>> an error is detected, how do you ensure that all temporarily
+>> allocated resources (locks, buffers, etc.) are freed?  In a few
+>> paragraphs, describe the strategy or strategies you adopted for
+>> managing these issues.  Give an example.
+Rather than letting users immediately modify an address, we check the 
+validity of pointers and addresses - checking if it’s a null-pointer, 
+if it points to a kernel address, or if it points to an unmapped location.
+When the check fails, and the user program does happen to be doing the 
+above, the process is killed and the resources that were used by said 
+process freed. 
+
+---- SYNCHRONIZATION ----
+
+>> B7: The "exec" system call returns -1 if loading the new executable
+>> fails, so it cannot return before the new executable has completed
+>> loading.  How does your code ensure this?  How is the load
+>> success/failure status passed back to the thread that calls "exec"?
+
+When calling the exec system call, the parent thread “downs” a semaphore 
+to keep it halted until the new process is finished loading. Whether or 
+not the new process has loaded successfully, the function “ups” the 
+semaphore, waking the parent thread. The variable holding the success/failure 
+status is updated to either -1 if the loading failed, or the new process’s 
+pid if it was successful. This variable is accessible by the parent 
+thread. It will return the value of that variable after calling exec.
+
+>> B8: Consider parent process P with child process C.  How do you
+>> ensure proper synchronization and avoid race conditions when P
+>> calls wait(C) before C exits?  After C exits?  How do you ensure
+>> that all resources are freed in each case?  How about when P
+>> terminates without waiting, before C exits?  After C exits?  Are
+>> there any special cases?
+
+When P calls the wait function before C exits, P “downs” a semaphore 
+in the process_wait() function that C “ups” when it exits. If P tries
+to call the wait function after C has already exited, then it will 
+access a saved exit code that is stored in a list of tuples (pid, exit_code). 
+If P terminates without waiting before C exits, then C will still be able 
+to access P’s memory, since it will not be deallocated until all of P’s 
+children have exited. If P terminates without waiting after C exits, 
+then there is nothing we need to do. These should be all the special 
+cases that need to be handled specifically.
+
+---- RATIONALE ----
+
+>> B9: Why did you choose to implement access to user memory from the
+>> kernel in the way that you did?
+
+Our implementation is very simple. This means it runs a little less 
+efficiently, but it is considerably cleaner and easier to implement/debug. 
+Our approach is to check if the user address is below the PHYS_BASE, and 
+if the user address points to a valid page. If we get past both of these 
+checks, we simply dereference the pointer.
+
+>> B10: What advantages or disadvantages can you see to your design
+>> for file descriptors?
+
+Our implementation of file descriptors is also very simple, and it keeps 
+track of all open file descriptors among all threads at the kernel level.
+This makes it easy to check if a file is open already. One disadvantage 
+might be that we have to search through the entire list of file descriptors 
+any time we want to open a new file. This may be slower than another 
+approach that we haven’t thought of.
+
+>> B11: The default tid_t to pid_t mapping is the identity mapping.
+>> If you changed it, what advantages are there to your approach?
+
+We did not change this.
+
+			   SURVEY QUESTIONS
+			   ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students, either for future quarters or the remaining projects?
+
+>> Any other comments?
+
+
+
